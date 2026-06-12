@@ -623,101 +623,69 @@ LIMIT 5;
 --3Q)  Among restaurants with at least 50 pre-crisis orders, which top 10 high-volume  restaurants experienced the largest percentage decline in order counts during the crisis period?
 
 CREATE OR REPLACE VIEW analytics.restaurant_decline AS
-WITH restaurant_orders AS (
-
-    SELECT
-        o.restaurant_id,
-
-        CASE
-            WHEN o.order_timestamp BETWEEN '2025-01-01' AND '2025-05-31 23:59:59'
-            THEN 'Pre-Crisis'
-
-            WHEN o.order_timestamp BETWEEN '2025-06-01' AND '2025-09-30 23:59:59'
-            THEN 'Crisis'
-        END AS period,
-
-        COUNT(o.order_id) AS total_orders
-
-    FROM staging.orders o
-
-    WHERE o.order_timestamp BETWEEN '2025-01-01' AND '2025-09-30 23:59:59'
-
-    GROUP BY o.restaurant_id, period
-),
-
-pivoted AS (
-
-    SELECT
-        restaurant_id,
-
-        SUM(CASE WHEN period = 'Pre-Crisis' THEN total_orders ELSE 0 END) AS pre_crisis_orders,
-        SUM(CASE WHEN period = 'Crisis' THEN total_orders ELSE 0 END) AS crisis_orders
-
-    FROM restaurant_orders
-    GROUP BY restaurant_id
-),
-
-filtered AS (
-
-    SELECT *
-    FROM pivoted
-    WHERE pre_crisis_orders >= 5   -- realistic threshold based on your dataset
-)
 
 SELECT
     restaurant_id,
-    pre_crisis_orders,
-    crisis_orders,
+
+    COUNT(
+        CASE
+            WHEN order_timestamp BETWEEN '2025-01-01'
+            AND '2025-05-31 23:59:59'
+            THEN 1
+        END
+    ) AS pre_crisis_orders,
+
+    COUNT(
+        CASE
+            WHEN order_timestamp BETWEEN '2025-06-01'
+            AND '2025-09-30 23:59:59'
+            THEN 1
+        END
+    ) AS crisis_orders,
 
     ROUND(
-        (pre_crisis_orders - crisis_orders) * 100.0
-        / NULLIF(pre_crisis_orders, 0),
+        (
+            COUNT(
+                CASE
+                    WHEN order_timestamp BETWEEN '2025-01-01'
+                    AND '2025-05-31 23:59:59'
+                    THEN 1
+                END
+            )
+            -
+            COUNT(
+                CASE
+                    WHEN order_timestamp BETWEEN '2025-06-01'
+                    AND '2025-09-30 23:59:59'
+                    THEN 1
+                END
+            )
+        ) * 100.0
+        /
+        NULLIF(
+            COUNT(
+                CASE
+                    WHEN order_timestamp BETWEEN '2025-01-01'
+                    AND '2025-05-31 23:59:59'
+                    THEN 1
+                END
+            ),
+            0
+        ),
         2
     ) AS decline_percentage
 
-FROM filtered
-
-ORDER BY decline_percentage DESC
-
-LIMIT 10;
-
---4Q) Cancellation Analysis: What is the cancellation rate trend pre-crisis vs crisis,  and which cities are most affected? 
-
-CREATE OR REPLACE VIEW analytics.cancellation_analysis AS
-
-SELECT
-    CASE
-        WHEN order_timestamp BETWEEN '2025-01-01' AND '2025-05-31 23:59:59'
-        THEN 'Pre-Crisis'
-
-        WHEN order_timestamp BETWEEN '2025-06-01' AND '2025-09-30 23:59:59'
-        THEN 'Crisis'
-    END AS period,
-
-    COUNT(order_id) AS total_orders,
-
-    SUM(
-        CASE
-            WHEN LOWER(is_cancelled) IN ('yes','y','1','true','cancelled')
-            THEN 1 ELSE 0
-        END
-    ) AS cancelled_orders,
-
-    ROUND(
-        SUM(
-            CASE
-                WHEN LOWER(is_cancelled) IN ('yes','y','1','true','cancelled')
-                THEN 1 ELSE 0
-            END
-        ) * 100.0 / COUNT(order_id),
-        2
-    ) AS cancellation_rate
-
 FROM staging.orders
 
-WHERE order_timestamp BETWEEN '2025-01-01' AND '2025-09-30 23:59:59'
+GROUP BY restaurant_id
 
-GROUP BY period;
+HAVING COUNT(
+    CASE
+        WHEN order_timestamp BETWEEN '2025-01-01'
+        AND '2025-05-31 23:59:59'
+        THEN 1
+    END
+) >= 15;
 
 ---city-level-cancellation
 CREATE OR REPLACE VIEW analytics.city_cancellation_analysis AS
@@ -896,7 +864,79 @@ SELECT *
 FROM monthly_rating
 ORDER BY month;
 
+--7Q) During the crisis period, identify the most frequently  occurring negative keywords in customer review texts
+
+CREATE OR REPLACE VIEW analytics.sentiment_insights AS
+
+WITH negative_reviews AS (
+
+    SELECT
+        LOWER(review_text) AS review_text
+
+    FROM staging.ratings
+
+    WHERE
+        TO_TIMESTAMP(
+            TRIM(review_timestamp),
+            'DD-MM-YYYY HH24:MI'
+        )
+        BETWEEN '2025-06-01'
+            AND '2025-09-30 23:59:59'
+
+        AND (
+            rating <= 2
+            OR sentiment_score < 0
+        )
+
+        AND review_text IS NOT NULL
+),
+
+split_words AS (
+
+    SELECT
+        REGEXP_SPLIT_TO_TABLE(
+            review_text,
+            '\s+'
+        ) AS word
+
+    FROM negative_reviews
+)
+
+SELECT
+    word,
+
+    COUNT(*) AS frequency
+
+FROM split_words
+
+WHERE LENGTH(word) > 3
+
+AND word NOT IN (
+    'this',
+    'that',
+    'with',
+    'have',
+    'they',
+    'were',
+    'from',
+    'your',
+    'food',
+    'very',
+    'there',
+    'would',
+    'been',
+    'restaurant',
+    'delivery'
+)
+
+GROUP BY word
+
+ORDER BY frequency DESC;
+
+
 --8Q)Revenue Impact: Estimate revenue loss from pre-crisis vs crisis (based on subtotal, discount, and delivery fee). 
+
+
 CREATE OR REPLACE VIEW analytics.revenue_impact AS
 
 WITH revenue_phase AS (
@@ -1133,156 +1173,91 @@ ON ch.customer_id = cr.customer_id;
 --10Q) Customer Lifetime Decline: Which high-value customers (top 5% by total  spend before the crisis) showed the largest drop in order frequency and ratings  during the crisis? What common patterns (e.g., location, cuisine preference, delivery delays) do they share? 
 
 CREATE OR REPLACE VIEW analytics.high_value_customer_decline AS
-WITH customer_spend AS (
 
+WITH customer_spend AS (
     SELECT
         customer_id,
-
-        SUM(
-            subtotal_amount
-            - discount_amount
-            + delivery_fee
-        ) AS total_spend
-
+        SUM(subtotal_amount - discount_amount + delivery_fee) AS total_spend
     FROM staging.orders
-
-    WHERE order_timestamp BETWEEN
-          '2025-01-01'
-      AND '2025-05-31 23:59:59'
-
+    WHERE order_timestamp BETWEEN '2025-01-01' AND '2025-05-31 23:59:59'
     GROUP BY customer_id
 ),
 
-threshold AS (
-
+spend_cutoff AS (
     SELECT
         PERCENTILE_CONT(0.95)
-        WITHIN GROUP (ORDER BY total_spend) AS spend_cutoff
-
+        WITHIN GROUP (ORDER BY total_spend) AS cutoff
     FROM customer_spend
 ),
 
 high_value_customers AS (
-
     SELECT
         cs.customer_id,
         cs.total_spend
-
     FROM customer_spend cs
-    CROSS JOIN threshold t
-
-    WHERE cs.total_spend >= t.spend_cutoff
+    CROSS JOIN spend_cutoff sc
+    WHERE cs.total_spend >= sc.cutoff
 ),
 
 pre_orders AS (
-
     SELECT
         customer_id,
         COUNT(order_id) AS pre_orders
-
     FROM staging.orders
-
-    WHERE order_timestamp BETWEEN
-          '2025-01-01'
-      AND '2025-05-31 23:59:59'
-
+    WHERE order_timestamp BETWEEN '2025-01-01' AND '2025-05-31 23:59:59'
     GROUP BY customer_id
 ),
 
 crisis_orders AS (
-
     SELECT
         customer_id,
         COUNT(order_id) AS crisis_orders
-
     FROM staging.orders
-
-    WHERE order_timestamp BETWEEN
-          '2025-06-01'
-      AND '2025-09-30 23:59:59'
-
+    WHERE order_timestamp BETWEEN '2025-06-01' AND '2025-09-30 23:59:59'
     GROUP BY customer_id
 ),
 
 pre_ratings AS (
-
     SELECT
         customer_id,
         AVG(rating) AS pre_avg_rating
-
     FROM staging.ratings
-
-    WHERE TO_TIMESTAMP(
-            TRIM(review_timestamp),
-            'DD-MM-YYYY HH24:MI'
-          )
-          BETWEEN '2025-01-01'
-              AND '2025-05-31 23:59:59'
-
+    WHERE TO_TIMESTAMP(TRIM(review_timestamp), 'DD-MM-YYYY HH24:MI')
+        BETWEEN '2025-01-01' AND '2025-05-31 23:59:59'
     GROUP BY customer_id
 ),
 
 crisis_ratings AS (
-
     SELECT
         customer_id,
         AVG(rating) AS crisis_avg_rating
-
     FROM staging.ratings
-
-    WHERE TO_TIMESTAMP(
-            TRIM(review_timestamp),
-            'DD-MM-YYYY HH24:MI'
-          )
-          BETWEEN '2025-06-01'
-              AND '2025-09-30 23:59:59'
-
+    WHERE TO_TIMESTAMP(TRIM(review_timestamp), 'DD-MM-YYYY HH24:MI')
+        BETWEEN '2025-06-01' AND '2025-09-30 23:59:59'
     GROUP BY customer_id
 )
 
 SELECT
-    hv.customer_id,
-    hv.total_spend,
-
-    po.pre_orders,
-    COALESCE(co.crisis_orders,0) AS crisis_orders,
-
-    ROUND(pr.pre_avg_rating::NUMERIC,2) AS pre_avg_rating,
-
-    ROUND(
-        COALESCE(cr.crisis_avg_rating,0)::NUMERIC,
-        2
-    ) AS crisis_avg_rating,
-
-    (
-        po.pre_orders
-        -
-        COALESCE(co.crisis_orders,0)
-    ) AS order_drop,
-
+    hvc.customer_id,
+    hvc.total_spend,
+    COALESCE(po.pre_orders, 0) AS pre_orders,
+    COALESCE(co.crisis_orders, 0) AS crisis_orders,
+    ROUND(COALESCE(pr.pre_avg_rating, 0)::NUMERIC, 2) AS pre_avg_rating,
+    ROUND(COALESCE(cr.crisis_avg_rating, 0)::NUMERIC, 2) AS crisis_avg_rating,
+    (COALESCE(po.pre_orders, 0) - COALESCE(co.crisis_orders, 0)) AS order_drop,
     ROUND(
         (
-            pr.pre_avg_rating
-            -
-            COALESCE(cr.crisis_avg_rating,0)
+            (COALESCE(po.pre_orders, 0) - COALESCE(co.crisis_orders, 0))
+            / NULLIF(COALESCE(po.pre_orders, 0), 0)
         )::NUMERIC,
         2
+    ) AS order_drop_pct,
+    ROUND(
+        (COALESCE(pr.pre_avg_rating, 0) - COALESCE(cr.crisis_avg_rating, 0))::NUMERIC,
+        2
     ) AS rating_drop
-
-FROM high_value_customers hv
-
-LEFT JOIN pre_orders po
-ON hv.customer_id = po.customer_id
-
-LEFT JOIN crisis_orders co
-ON hv.customer_id = co.customer_id
-
-LEFT JOIN pre_ratings pr
-ON hv.customer_id = pr.customer_id
-
-LEFT JOIN crisis_ratings cr
-ON hv.customer_id = cr.customer_id
-
-ORDER BY order_drop DESC, rating_drop DESC
-
-LIMIT 20;
+FROM high_value_customers hvc
+LEFT JOIN pre_orders po ON hvc.customer_id = po.customer_id
+LEFT JOIN crisis_orders co ON hvc.customer_id = co.customer_id
+LEFT JOIN pre_ratings pr ON hvc.customer_id = pr.customer_id
+LEFT JOIN crisis_ratings cr ON hvc.customer_id = cr.customer_id;
