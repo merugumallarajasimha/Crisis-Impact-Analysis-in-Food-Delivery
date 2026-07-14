@@ -44,7 +44,7 @@ QuickBite's management needed answers to:
 - **Top 5% high-value customers** showed 4-6 order drops with severity clustering in Bengaluru; North Indian and Biryani cuisine segments most affected
 
 ### Secondary Analysis (Research-Based)
-- **Competitors grew** during the same period  Zomato food delivery revenue +23.2% YoY (₹2,650 Cr); Swiggy revenue +54.4% YoY (₹5,561 Cr) — proving the crisis was QuickBite-specific, not industry-wide
+- **Competitors grew** during the same period  Zomato food delivery revenue +23.2% YoY (₹2,650 Cr); Swiggy revenue +54.4% YoY (₹5,561 Cr) - proving the crisis was QuickBite-specific, not industry-wide
 - **Cloud kitchens and small brands** showed the highest churn risk (80–100% order decline); large dine-in chains were more resilient
 - **High-priority lapsed customers** (Return Score 5–6/6) are identified for targeted recovery campaigns based on pre-crisis loyalty and satisfaction signals
 
